@@ -5,6 +5,15 @@ on:
     branches: [main] # 触发分支（根据你的主分支名称修改）
   workflow_dispatch: # 允许手动触发
 
+# The deploy pushes the built site to the `gh-pages` branch, so the job needs to
+# write to the repo. Without this the default token is read-only for a repo
+# owned by an organisation (it was read/write while this lived under a personal
+# account), and the push fails with:
+#   remote: Permission to rwr-infra/rwrsg.git denied to github-actions[bot].
+#   403
+permissions:
+  contents: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-22.04
