@@ -2,7 +2,7 @@
 <html lang="zh">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/icon.png" />
+    <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RWRSG</title>
     <style>
@@ -31,7 +31,7 @@
         position: relative;
         width: 200px;
         height: 200px;
-        animation: infiniteGrowth 6000s linear infinite;
+        flex-shrink: 0;
       }
 
       .logo-svg {
@@ -41,14 +41,26 @@
         transform: translate(-50%, -50%);
         width: 180px;
         height: 180px;
+        animation: logoBreath 1800ms cubic-bezier(0.23, 1, 0.32, 1) infinite;
       }
 
-      @keyframes infiniteGrowth {
-        0% {
-          transform: scale(1);
-        }
+      /* A gentle breath: enough to signal "still working", never enough to
+         distract while the bundle parses. */
+      @keyframes logoBreath {
+        0%,
         100% {
-          transform: scale(100); /* 放大到100倍 */
+          transform: translate(-50%, -50%) scale(0.96);
+          opacity: 0.9;
+        }
+        50% {
+          transform: translate(-50%, -50%) scale(1);
+          opacity: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .logo-svg {
+          animation: none;
         }
       }
 
@@ -65,21 +77,22 @@
         z-index: 10000;
       }
     </style>
-    <script type="module" crossorigin src="/assets/js/index.BckYgV3-.js"></script>
+    <script type="module" crossorigin src="/assets/js/index.Kz_ePs8x.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/css/index.BoIdQfN9.css">
   </head>
   <body style="margin: 0">
-    <div id="loading">
+    <div id="loading" role="status" aria-live="polite">
       <div class="logo-container">
         <!-- 使用SVG图标替换原有的徽标 -->
         <img src="/icon.svg" alt="Logo" class="logo-svg" />
       </div>
       <!-- 固定位置的提示文字 -->
-      <div id="loading-tip" class="loading-tip">使用顶部搜索框快速查找武器，支持中英文混合搜索</div>
+      <div id="loading-tip" class="loading-tip">正在载入数据…</div>
     </div>
 
     <script>
       // 随机提示语列表 - 立即执行
-      const tips = [
+      const tipsZh = [
         "在主页可添加物品、调整属性、生成售卖图片",
         "在表格页可搜索筛选、查看武器详细规格",
         "支持导入导出 JSON 数据文件，方便数据迁移",
@@ -94,11 +107,29 @@
         "数据包含武器、装备、物品等所有物品信息",
         "按 F5 刷新页面查看新的随机提示"
       ];
-      // 立即设置随机提示
+      const tipsEn = [
+        "Add items, adjust properties and render your stall on the home page",
+        "The workbench lets you search, filter and inspect full item specs",
+        "Import and export JSON files to move your data between devices",
+        "Your data is saved in this browser — refreshing will not lose it",
+        "The switch in the header toggles dark mode",
+        "Prices are in RP (resource points)",
+        "Use the sidebar to move between the home page and the workbench",
+        "An exported stall image can be copied straight to the clipboard",
+        "Set a discount to run a sale",
+        "Quantities are adjustable, so bulk listings are quick to build",
+        "The stall image accepts a custom background colour and font",
+        "The catalog covers weapons, gear and every other item",
+        "Press F5 for another random tip"
+      ];
+      // 与 i18n.jsx 使用同一个 lang 键，语言切换后提示语也随之切换
+      const isZh = (localStorage.getItem("lang") || "zh") === "zh";
+      const tips = isZh ? tipsZh : tipsEn;
       const randomTip = tips[Math.floor(Math.random() * tips.length)];
       const tipElement = document.getElementById("loading-tip");
       if (tipElement) {
         tipElement.textContent = randomTip;
+        tipElement.lang = isZh ? "zh-CN" : "en";
       }
     </script>
 
