@@ -1,0 +1,31 @@
+{
+  "_comment": "The search contract. Every implementation — the JS one in src/search.js, and any Python one added later — must agree with every case here. Run the JS side with `npm test`. A Python side should load this same file and assert the same pairs, so 'the two agree' is checked rather than assumed.",
+  "_shape": "fields: the strings a record exposes to search. query: what the user typed. expect: whether it should match.",
+  "cases": [
+    { "why": "the reported case: the tier is a CJK Roman numeral, the reader types a digit", "fields": ["Ⅲ型防弹背心", "Vest, type III", "vest3.carry_item"], "query": "3型防弹背心", "expect": true },
+    { "why": "and the other direction", "fields": ["Ⅲ型防弹背心", "Vest, type III", "vest3.carry_item"], "query": "Ⅲ型防弹背心", "expect": true },
+    { "why": "the digit reaches the English name's ASCII numeral", "fields": ["Ⅲ型防弹背心", "Vest, type III"], "query": "type 3", "expect": true },
+    { "why": "the ASCII numeral reaches the same record", "fields": ["Ⅲ型防弹背心", "Vest, type III"], "query": "III", "expect": true },
+    { "why": "Ⅰ and Ⅳ fold too", "fields": ["社群箱子Ⅳ"], "query": "箱子4", "expect": true },
+    { "why": "Ⅹ folds to two digits", "fields": ["马克Ⅹ型"], "query": "10", "expect": true },
+
+    { "why": "124 names use full-width parentheses", "fields": ["鲁格 AC556（刺刀）"], "query": "(刺刀)", "expect": true },
+    { "why": "and the full-width query still works", "fields": ["鲁格 AC556（刺刀）"], "query": "（刺刀）", "expect": true },
+
+    { "why": "whitespace is not significant", "fields": ["鲁格 AC556"], "query": "鲁格AC556", "expect": true },
+    { "why": "nor is a stray space in the query", "fields": ["鲁格AC556"], "query": "鲁格 AC556", "expect": true },
+
+    { "why": "case is not significant", "fields": ["Vest, type III"], "query": "vest", "expect": true },
+    { "why": "the item key is searchable", "fields": ["Ⅲ型防弹背心", "vest3.carry_item"], "query": "vest3.carry_item", "expect": true },
+    { "why": "a key fragment is searchable", "fields": ["AK47/GP25（下挂榴弹）", "ak47_w_gp25.weapon"], "query": "gp25", "expect": true },
+
+    { "why": "an empty query matches everything", "fields": ["anything"], "query": "", "expect": true },
+    { "why": "so does whitespace only", "fields": ["anything"], "query": "   ", "expect": true },
+    { "why": "a missing field must not throw", "fields": [null, "", "鲁格 AC556"], "query": "鲁格", "expect": true },
+
+    { "why": "no false positive on an unrelated query", "fields": ["Ⅲ型防弹背心"], "query": "ak47", "expect": false },
+    { "why": "a bare 'i' is not folded to 1", "fields": ["A1"], "query": "i", "expect": false },
+    { "why": "but the literal digit still is", "fields": ["A1"], "query": "1", "expect": true },
+    { "why": "the numeral must be present, not implied", "fields": ["Ⅱ型防弹背心"], "query": "3", "expect": false }
+  ]
+}

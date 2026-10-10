@@ -8,6 +8,7 @@ import enUS from "antd/locale/en_US";
 import App from "./App";
 import "./i18n";
 import i18n from "./i18n";
+import "./app.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
@@ -26,7 +27,9 @@ createRoot(document.getElementById("root")).render(
               <div
                 style={{
                   height: "100vh",
-                  width: "100vh",
+                  /* Was 100vh — a square viewport that pushed the label off
+                   * centre on every non-square window. */
+                  width: "100%",
                   alignContent: "center",
                   textAlign: "center",
                 }}

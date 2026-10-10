@@ -10,6 +10,8 @@ import {
   Modal,
   InputNumber,
   message,
+  Flex,
+  Tooltip,
 } from "antd";
 import {
   SearchOutlined,
@@ -17,49 +19,18 @@ import {
   PlusOutlined,
   CopyOutlined,
   DownloadOutlined,
+  LinkOutlined,
 } from "@ant-design/icons";
-import DataSource from "./data.json";
 import KeyListTrans from "../pre-pull/keyListTrans.json";
 import priceData from "./price.json";
 import useLocalStorageState from "use-local-storage-state";
 import html2canvas from "html2canvas";
 import fs from "file-saver";
-
-// 图片预加载
-const imageModules = import.meta.glob("./assets/items/*.png", { eager: true });
-const preloadedUrls = Object.fromEntries(
-  Object.entries(imageModules).map(([path, module]) => [path, module.default]),
-);
-
-// 获取 App.jsx 中的 data 状态
-const getInventoryData = () => {
-  const stored = localStorage.getItem("data");
-  return stored
-    ? JSON.parse(stored)
-    : [
-        { key: "lottery", name: "彩票", price: 1700, num: 1 },
-        { key: "vest3", name: "Ⅲ型防弹背心", price: 200, num: 2 },
-        { key: "aug", name: "斯太尔AUG突击步枪", price: 250, num: 5 },
-      ];
-};
-
-const setInventoryData = (newData) => {
-  const existing = getInventoryData();
-  const merged = [...existing, ...newData];
-  localStorage.setItem("data", JSON.stringify(merged));
-};
-
-// 姿态翻译映射
-const stanceTranslations = {
-  running: "奔跑",
-  walking: "行走",
-  crouch_moving: "蹲伏移动",
-  standing: "站立",
-  crouching: "蹲伏",
-  prone: "匍匐",
-  prone_moving: "匍匐移动",
-  over_wall: "越墙",
-};
+import { useTranslation } from "react-i18next";
+import { useCatalog } from "./catalog.js";
+import { wikiUrl } from "./onlineSource.js";
+import { inventoryRowFor, upsertInventoryRows } from "./inventory.js";
+import { matches } from "./search.js";
 
 // 转换数据格式：将data.json的字典结构转换为数组
 const convertDataToArray = (data) => {
@@ -76,9 +47,18 @@ const convertDataToArray = (data) => {
   });
 };
 
-const WeaponList = convertDataToArray(DataSource);
-
 const RwrTable = () => {
+  const { t } = useTranslation();
+
+  /* Bundled snapshot first, online additions second — see catalog.js. The list
+   * is built here rather than at module scope so it can pick up the online
+   * layer once it answers. */
+  const catalog = useCatalog();
+  const WeaponList = useMemo(
+    () => convertDataToArray(catalog.entries),
+    [catalog.entries],
+  );
+
   // 使用localStorage存储表格设置
   const [tableSettings, setTableSettings] = useLocalStorageState(
     "weaponTableSettings",
@@ -106,25 +86,37 @@ const RwrTable = () => {
     setTableSettings({ ...tableSettings, searchText: value });
   };
 
-  // 打开编辑对话框
+  /* This list is the *catalog*, not the stall, so a record carries no price and
+   * no quantity. Both have to come from the stall row — prefilling `1` for an
+   * item already held 5 silently reset its quantity on save.
+   *
+   * `??` rather than `||`: a price of 0 is a real price, not a missing one. */
   const handleOpenEdit = (record) => {
+    const held = inventoryRowFor(record.id);
     setEditRecord(record);
-    setEditPrice(record.price || priceData[record.id] || null);
-    setEditNum(record.num || 1);
+    setEditPrice(held?.price ?? record.price ?? priceData[record.hud_icon] ?? null);
+    setEditNum(held?.num ?? 1);
     setEditModalVisible(true);
   };
 
-  // 保存编辑
+  /* Writes the same row shape the picker does: `key` is the hud icon the stall
+   * renders, `itemKey` is the record key that identifies it.
+   *
+   * Without `itemKey` the row's identity fell back to the icon, which 507 of
+   * the 948 records share — so adding an item already in the stall appended a
+   * duplicate rather than editing it, and the edit itself was then dropped by
+   * de-duplication. `upsertInventoryRows` replaces in place. */
   const handleSaveEdit = () => {
-    const newData = [
+    if (!editRecord) return;
+    upsertInventoryRows([
       {
-        key: editRecord.hud_icon, // 使用外层键（如 "ar15"）
-        name: editRecord.cnName,
+        key: editRecord.hud_icon,
+        itemKey: editRecord.id,
+        name: editRecord.cnName || editRecord.enName || editRecord.id,
         price: editPrice,
         num: editNum,
       },
-    ];
-    setInventoryData(newData);
+    ]);
     setEditModalVisible(false);
     setEditRecord(null);
   };
@@ -143,16 +135,11 @@ const RwrTable = () => {
   const filteredWeapons = useMemo(() => {
     let result = [...WeaponList];
 
-    // 应用搜索过滤
+    // 应用搜索过滤 —— 与选择器共用同一套规则（见 src/search.js）
     if (searchText) {
-      result = result.filter((weapon) => {
-        const cnName = weapon.cnName?.toLowerCase() || "";
-        const enName = weapon.enName?.toLowerCase() || "";
-        return (
-          cnName.includes(searchText.toLowerCase()) ||
-          enName.includes(searchText.toLowerCase())
-        );
-      });
+      result = result.filter((weapon) =>
+        matches([weapon.cnName, weapon.enName, weapon.id], searchText),
+      );
     }
 
     // 应用排序
@@ -187,20 +174,13 @@ const RwrTable = () => {
   const columns = useMemo(() => {
     return [
       {
-        title: "图片",
-        dataIndex: "id",
+        title: t("workbench.image"),
         key: "image",
         fixed: "left",
         width: 80,
-        sorter: true,
-        sortOrder:
-          tableSettings.sortColumn === "id"
-            ? tableSettings.sortDirection
-            : null,
-        render: (id, record) => (
+        render: (_, record) => (
           <img
-            src={preloadedUrls["./assets/items/" + record.hud_icon + ".png"]}
-            fallback="data:image/png;base64,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"
+            src={catalog.iconUrl(record.hud_icon)}
             style={{
               maxHeight: "50px",
               maxWidth: "50px",
@@ -210,7 +190,7 @@ const RwrTable = () => {
         ),
       },
       {
-        title: "中文名称",
+        title: t("workbench.cnName"),
         dataIndex: "cnName",
         key: "cnName",
         // fixed: "left",
@@ -226,12 +206,14 @@ const RwrTable = () => {
             onClick={() => setSelectedWeapon(record)}
             style={{ padding: 0, height: "auto" }}
           >
-            {cnName}
+            {/* An online-only entry has no bundled translation yet; the English
+             * name beats an empty cell. */}
+            {cnName || <span style={{ opacity: 0.65 }}>{record.enName}</span>}
           </Button>
         ),
       },
       {
-        title: "键",
+        title: t("key"),
         dataIndex: "id",
         key: "id",
         width: 200,
@@ -242,7 +224,7 @@ const RwrTable = () => {
             : null,
       },
       {
-        title: "操作",
+        title: t("action"),
         key: "action",
         width: 150,
         render: (_, record) => (
@@ -252,24 +234,42 @@ const RwrTable = () => {
             icon={<PlusOutlined />}
             onClick={() => handleOpenEdit(record)}
           >
-            添加/编辑
+            {t("workbench.addEdit")}
           </Button>
         ),
       },
     ];
-  }, [tableSettings.sortColumn, tableSettings.sortDirection]);
+  }, [tableSettings.sortColumn, tableSettings.sortDirection, catalog, t]);
 
   // 道具详情面板
   const weaponDetailPanel = selectedWeapon && (
     <div id="target_section">
       <Card
-        title={selectedWeapon.cnName || "未知道具"}
+        title={
+          selectedWeapon.cnName ||
+          selectedWeapon.enName ||
+          t("workbench.unknownItem")
+        }
         extra={
-          <Button
-            type="text"
-            icon={<SwapOutlined />}
-            onClick={() => setSelectedWeapon(null)}
-          />
+          <Flex gap={4} align="center">
+            {/* The same record, rendered as a full article on the wiki. */}
+            {wikiUrl(selectedWeapon.key, catalog.online.packageId) && (
+              <Tooltip title={t("workbench.viewOnWiki")}>
+                <Button
+                  type="text"
+                  icon={<LinkOutlined />}
+                  href={wikiUrl(selectedWeapon.key, catalog.online.packageId)}
+                  target="_blank"
+                  rel="noreferrer"
+                />
+              </Tooltip>
+            )}
+            <Button
+              type="text"
+              icon={<SwapOutlined />}
+              onClick={() => setSelectedWeapon(null)}
+            />
+          </Flex>
         }
         style={{ marginTop: 20 }}
       >
@@ -302,12 +302,8 @@ const RwrTable = () => {
             }}
           >
             <img
-              src={
-                preloadedUrls[
-                  "./assets/items/" + selectedWeapon.hud_icon + ".png"
-                ]
-              }
-              alt={selectedWeapon.cnName}
+              src={catalog.iconUrl(selectedWeapon.hud_icon)}
+              alt={selectedWeapon.cnName || selectedWeapon.enName}
               style={{
                 height: "100%",
                 objectFit: "contain",
@@ -343,7 +339,7 @@ const RwrTable = () => {
                   >
                     {Object.entries(value).map(([stanceKey, stanceValue]) => (
                       <div key={stanceKey}>
-                        {stanceTranslations[stanceKey] || stanceKey}:{" "}
+                        {t(`stance.${stanceKey}`, stanceKey)}:{" "}
                         {stanceValue}
                       </div>
                     ))}
@@ -388,7 +384,7 @@ const RwrTable = () => {
         }
       });
     } catch (error) {
-      message.error("保存图片失败：" + error.message);
+      message.error(t("workbench.saveImageFailed", { msg: error.message }));
     }
   };
 
@@ -411,14 +407,14 @@ const RwrTable = () => {
               "image/png": blob,
             });
             await navigator.clipboard.write([item]);
-            message.info("已将图片复制至剪贴板");
+            message.info(t("workbench.copiedToClipboard"));
           } catch (error) {
-            message.error("复制至剪贴板失败：" + error.message);
+            message.error(t("workbench.copyFailed", { msg: error.message }));
           }
         }
       });
     } catch (error) {
-      message.error("复制图片失败：" + error.message);
+      message.error(t("workbench.copyImageFailed", { msg: error.message }));
     }
   };
 
@@ -426,27 +422,29 @@ const RwrTable = () => {
     <div style={{ padding: 20, position: "relative" }}>
       {/* 编辑对话框 */}
       <Modal
-        title="添加/编辑物品"
+        title={t("workbench.addEditItem")}
         open={editModalVisible}
         onOk={handleSaveEdit}
         onCancel={() => setEditModalVisible(false)}
         width={400}
       >
         <Descriptions column={1} bordered>
-          <Descriptions.Item label="物品名称">
+          <Descriptions.Item label={t("workbench.itemName")}>
             {editRecord?.cnName}
           </Descriptions.Item>
-          <Descriptions.Item label="物品键">{editRecord?.id}</Descriptions.Item>
-          <Descriptions.Item label="价格 (rp)">
+          <Descriptions.Item label={t("workbench.itemKey")}>{editRecord?.id}</Descriptions.Item>
+          <Descriptions.Item label={`${t("price")} (rp)`}>
             <InputNumber
               style={{ width: "100%" }}
               value={editPrice}
               onChange={setEditPrice}
               min={0}
-              placeholder={priceData[editRecord?.id] || "输入价格"}
+              placeholder={
+                priceData[editRecord?.hud_icon] || t("workbench.inputPrice")
+              }
             />
           </Descriptions.Item>
-          <Descriptions.Item label="数量">
+          <Descriptions.Item label={t("num")}>
             <InputNumber
               style={{ width: "100%" }}
               value={editNum}
@@ -461,7 +459,7 @@ const RwrTable = () => {
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col flex="auto">
           <Input
-            placeholder="搜索道具名称..."
+            placeholder={t("workbench.searchPlaceholder")}
             prefix={<SearchOutlined />}
             value={searchText}
             onChange={(e) => handleSearch(e.target.value)}
@@ -482,7 +480,7 @@ const RwrTable = () => {
         pagination={{
           pageSize: tableSettings.pageSize,
           showSizeChanger: false,
-          showTotal: (total) => `共 ${total} 件道具`,
+          showTotal: (total) => t("workbench.totalItems", { num: total }),
         }}
         onChange={handleSortChange}
       />
@@ -497,14 +495,14 @@ const RwrTable = () => {
             icon={<DownloadOutlined />}
             onClick={handleSaveImage}
           >
-            保存图片
+            {t("workbench.saveImage")}
           </Button>
           <Button
             type="primary"
             icon={<CopyOutlined />}
             onClick={handleCopyImage}
           >
-            复制图片
+            {t("butCopyImg")}
           </Button>
         </div>
       )}

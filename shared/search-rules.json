@@ -1,0 +1,44 @@
+{
+  "_comment": "Shared search normalisation. Data, not code, so the browser (JS) and the build pipeline (Python) can both read this one file instead of each keeping a copy. Change it here and both sides change together.",
+  "_rules": [
+    "Fold case.",
+    "Fold full-width U+FF01-U+FF5E to their half-width twins, so a half-width query reaches names like 鲁格 AC556（刺刀）.",
+    "Map CJK Roman numeral characters to digits, so 3 finds Ⅲ型防弹背心.",
+    "Map standalone multi-letter ASCII Roman numerals to digits, so 3 also finds 'Vest, type III'.",
+    "Remove all whitespace, so 鲁格AC556 finds 鲁格 AC556."
+  ],
+  "_cjkNumeralsNote": "Both cases are listed on purpose. U+2160-U+2169 (Ⅰ…) and U+2170-U+2179 (ⅰ…) are distinct characters, and BOTH JavaScript's toLowerCase() and Python's str.lower() map the former to the latter. A table that only held one case would stop matching depending on where the fold ran — which is exactly the bug this file exists to prevent. Listing both makes the order of operations irrelevant.",
+  "cjkNumerals": {
+    "Ⅰ": "1",
+    "Ⅱ": "2",
+    "Ⅲ": "3",
+    "Ⅳ": "4",
+    "Ⅴ": "5",
+    "Ⅵ": "6",
+    "Ⅶ": "7",
+    "Ⅷ": "8",
+    "Ⅸ": "9",
+    "Ⅹ": "10",
+    "ⅰ": "1",
+    "ⅱ": "2",
+    "ⅲ": "3",
+    "ⅳ": "4",
+    "ⅴ": "5",
+    "ⅵ": "6",
+    "ⅶ": "7",
+    "ⅷ": "8",
+    "ⅸ": "9",
+    "ⅹ": "10"
+  },
+  "asciiNumerals": {
+    "viii": "8",
+    "vii": "7",
+    "iii": "3",
+    "ii": "2",
+    "ix": "9",
+    "iv": "4",
+    "vi": "6"
+  },
+  "_asciiNumeralsNote": "Single-letter forms (i, v, x) are deliberately absent: in this catalog they are far more likely to be real tokens than numbers, and folding them matches things nobody asked for.",
+  "fullWidthRange": ["FF01", "FF5E"]
+}

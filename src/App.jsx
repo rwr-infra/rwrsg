@@ -1,9 +1,11 @@
 import React, { useContext, useMemo } from "react";
 import {
-  AppstoreAddOutlined,
   AppstoreOutlined,
+  CloudOutlined,
+  CloudSyncOutlined,
   CopyOutlined,
   DeleteOutlined,
+  DesktopOutlined,
   DollarCircleOutlined,
   DownloadOutlined,
   EyeOutlined,
@@ -13,11 +15,11 @@ import {
   HolderOutlined,
   HomeOutlined,
   LeftCircleOutlined,
+  LinkOutlined,
   LoadingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MoonOutlined,
-  PlusOutlined,
   RightCircleFilled,
   SunOutlined,
   SwitcherOutlined,
@@ -34,6 +36,7 @@ import {
   ColorPicker,
   ConfigProvider,
   Divider,
+  Dropdown,
   Flex,
   Image,
   Input,
@@ -43,14 +46,15 @@ import {
   message,
   Modal,
   Row,
-  Select,
   Slider,
+  Space,
   Spin,
   Statistic,
   Switch,
   Table,
   theme,
   Timeline,
+  Tooltip,
   // Tour,
   Typography,
   Upload,
@@ -65,7 +69,6 @@ import Marquee from "react-fast-marquee";
 import fs from "file-saver";
 import html2canvas from "html2canvas";
 import moment from "moment";
-import translData from "./data.json";
 import { useVercount } from "vercount-react";
 import CountUp from "react-countup";
 import priceData from "./price.json";
@@ -83,21 +86,23 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useCatalog } from "./catalog.js";
+import { setOnlineEnabled, wikiUrl } from "./onlineSource.js";
+import {
+  INVENTORY_EVENT,
+  dedupeRows,
+  parseInventoryImport,
+  readInventory,
+  resolveInventory,
+  rowId,
+} from "./inventory.js";
+import PromoBanner from "./PromoBanner.jsx";
+import ItemPicker from "./ItemPicker.jsx";
+import { unitTrans } from "./format.js";
 
 const formatter = (value) => <CountUp end={value} separator="," />;
 
 const { Header, Content, Footer, Sider } = Layout;
-function removeDuplicates(arr) {
-  const seen = new Map();
-  return arr.filter((item) => {
-    if (!seen.has(item.key)) {
-      seen.set(item.key, true);
-      return true;
-    }
-    return false;
-  });
-}
-
 const ToggleSidebarButton = ({ collapsed, onToggle }) => {
   return (
     <div
@@ -119,12 +124,6 @@ const ToggleSidebarButton = ({ collapsed, onToggle }) => {
   );
 };
 
-const imageModules = import.meta.glob("./assets/items/*.png", { eager: true });
-
-const preloadedUrls = Object.fromEntries(
-  Object.entries(imageModules).map(([path, module]) => [path, module.default]),
-);
-
 const lines = [
   "梦想只是梦想，不能当饭吃。那我就不吃。我只是害怕如果我今天死掉，或许就这样一事无成，过完一生。——《心灵奇旅》",
   "由衷感谢所有对本项目提供帮助的游戏玩家以及社区成员。30年后有人问起RWR是什么，哦，那是一个漫长而愉快的梦。",
@@ -134,48 +133,55 @@ const lines = [
   "有的鸟终究是关不住的，因为他们的羽翼太过光辉——《肖申克的救赎》",
 ];
 
-const unitTrans = (num) => {
-  const absNum = Math.abs(num);
-  let value, unit;
+/* ── the commit timeline ──────────────────────────────────────────────────── */
 
-  if (absNum >= 1e12) {
-    value = num / 1e12;
-    unit = "t";
-  } else if (absNum >= 1e9) {
-    value = num / 1e9;
-    unit = "b";
-  } else if (absNum >= 1e6) {
-    value = num / 1e6;
-    unit = "m";
-  } else if (absNum >= 1e3) {
-    value = num / 1e3;
-    unit = "k";
-  } else {
-    return num.toString();
+/* The canonical repo. `bananaxiao2333/rwrsg` still 301s here, but every hop is
+ * a wasted round trip, and the badges below should not depend on a redirect. */
+const REPO = "rwr-infra/rwrsg";
+const COMMITS_URL = `https://api.github.com/repos/${REPO}/commits`;
+const COMMITS_CACHE_KEY = "rwrsg.commits";
+
+/* Unauthenticated GitHub allows 60 requests an hour, and this used to fire on
+ * every mount without checking `response.ok` — so a few reloads could exhaust
+ * the quota and leave the timeline blank forever, with nothing reported. Cache
+ * the *data* for the tab; the JSX is built at render. */
+function readCommitCache() {
+  try {
+    const raw = sessionStorage.getItem(COMMITS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
+}
 
-  // 将数字转换为字符串保留所有小数
-  const strVal = value.toString();
-
-  // 处理科学计数法 (大于1e21的数字会自动转科学计数法)
-  if (strVal.includes("e")) {
-    return value.toLocaleString("fullwide", { useGrouping: false }) + unit;
+function writeCommitCache(list) {
+  try {
+    sessionStorage.setItem(COMMITS_CACHE_KEY, JSON.stringify(list));
+  } catch {
+    /* private mode — the timeline simply refetches next time */
   }
+}
 
-  return strVal + unit;
-};
+/** Reduce the API payload to the three fields the timeline renders. */
+const extractCommitInfo = (commits) =>
+  commits.map((commit) => ({
+    date: commit?.commit?.author?.date || "",
+    message: commit?.commit?.message || "",
+    url: commit?.html_url || "",
+  }));
 
-const extractCommitInfo = (commits) => {
-  return commits.map((commit) => {
-    // 从commit.commit.author获取提交者信息
-    const authorInfo = commit.commit.author;
-
-    // 返回提取的信息
-    return {
-      label: authorInfo.date,
-      children: <a href={commit.html_url}>{commit.commit.message}</a>,
-    };
-  });
+/** Shown for any route that does not exist. */
+const NotFound = () => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  React.useEffect(() => {
+    /* Was a `<meta http-equiv="refresh">` inside the component: an invalid DOM
+     * prop name, and it reloaded the whole app instead of routing. */
+    const id = window.setTimeout(() => navigate("/", { replace: true }), 3000);
+    return () => window.clearTimeout(id);
+  }, [navigate]);
+  return <Typography>{t("notFound")}</Typography>;
 };
 
 const RowContext = React.createContext({});
@@ -222,17 +228,16 @@ const DRow = (props) => {
 
 const App = () => {
   const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
   const [collapsed, setCollapsed] = React.useState(false);
 
   const onDragEnd = ({ active, over }) => {
     if (active.id !== over?.id) {
       setData((prevState) => {
         const activeIndex = prevState.findIndex(
-          (record) => record.key === active?.id,
+          (record) => rowId(record) === active?.id,
         );
         const overIndex = prevState.findIndex(
-          (record) => record.key === over?.id,
+          (record) => rowId(record) === over?.id,
         );
         return arrayMove(prevState, activeIndex, overIndex);
       });
@@ -280,17 +285,45 @@ const App = () => {
     },
   ];
 
-  const [commitHistory, setCommitHistory] = React.useState([]);
+  const [commitHistory, setCommitHistory] = React.useState(null);
   React.useEffect(() => {
+    let cancelled = false;
     const fetchCommits = async () => {
-      const response = await fetch(
-        "https://api.github.com/repos/bananaxiao2333/rwrsg/commits",
-      );
-      const jsonData = await response.json();
-      setCommitHistory(extractCommitInfo(jsonData));
+      const cached = readCommitCache();
+      if (cached) {
+        if (!cancelled) setCommitHistory(cached);
+        return;
+      }
+      try {
+        const response = await fetch(COMMITS_URL);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const jsonData = await response.json();
+        if (!Array.isArray(jsonData)) throw new Error("unexpected payload");
+        const list = extractCommitInfo(jsonData);
+        writeCommitCache(list);
+        if (!cancelled) setCommitHistory(list);
+      } catch {
+        /* Offline, rate-limited, or the payload changed shape. The timeline is
+         * decoration — an empty one beats an error, and the page keeps working. */
+        if (!cancelled) setCommitHistory([]);
+      }
     };
     fetchCommits();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  /* Built here, not in the fetch: the cached payload is plain data, so the JSX
+   * is the one thing that must not be what gets stored. */
+  const timelineItems = React.useMemo(
+    () =>
+      (commitHistory || []).map((commit) => ({
+        label: commit.date,
+        children: <a href={commit.url}>{commit.message}</a>,
+      })),
+    [commitHistory],
+  );
 
   const getRandomItem = () => {
     const randomIndex = Math.floor(Math.random() * lines.length);
@@ -301,20 +334,47 @@ const App = () => {
     setRandomItem(getRandomItem());
   }, []);
 
-  const [imageUrls, setImageUrls] = React.useState({});
-  const [spinning, setSpinning] = React.useState(false);
+  /* The bundled snapshot plus whatever the online source can contribute.
+   * Bundled entries are never modified, so this is a superset of what rwrsg
+   * shipped and every existing row renders exactly as before. */
+  const catalog = useCatalog();
+  const { entries } = catalog;
+  const itemCount = Object.keys(entries).length;
+
+  /* A spinner only while the online layer answers for the first time. A cached
+   * or switched-off source settles immediately, so returning users see nothing. */
+  const spinning =
+    catalog.online.status === "loading" && !catalog.online.fromCache;
+
+  /* Announce the catalog once it has settled, so the count includes whatever
+   * the online source contributed instead of under-reporting mid-fetch. */
+  const announced = React.useRef(false);
+  const catalogSettled =
+    catalog.online.status === "ready" ||
+    catalog.online.status === "error" ||
+    catalog.online.status === "disabled";
   React.useEffect(() => {
-    setSpinning(true);
+    if (!catalogSettled || announced.current) return;
+    announced.current = true;
     message.open({
       type: "info",
-      // content: t("app.currentTip", { num: Object.keys(preloadedUrls).length }),
-      content: t("app.currentTip", { num: Object.keys(translData).length }),
+      content: t("app.currentTip", { num: itemCount }),
       duration: 3,
     });
+  }, [catalogSettled, itemCount, t]);
 
-    setImageUrls(preloadedUrls);
-    setSpinning(false);
-  }, []);
+  /* One line explaining what the online layer is currently doing, so the switch
+   * in the header is never a mystery. */
+  const onlineStatusText = React.useMemo(() => {
+    const s = catalog.online;
+    if (!s.enabled) return t("online.off");
+    if (s.status === "loading") return t("online.loading");
+    if (s.status === "error") return t("online.error");
+    if (s.status === "ready")
+      return t("online.on", { pkg: s.packageId || "—", num: catalog.added });
+    return t("online.loading");
+  }, [catalog.online, catalog.added, t]);
+
   const [currentTime, setCurrentTime] = React.useState(new moment().format());
   React.useEffect(() => {
     const timer = setInterval(() => {
@@ -325,93 +385,12 @@ const App = () => {
     };
   }, []);
 
-  var temp_opti = [];
-  Object.entries(translData).forEach((key, value) => {
-    var n = key[0];
-
-    temp_opti = temp_opti.concat([
-      {
-        value:
-          n +
-          "|" +
-          key[1]["hud_icon"] +
-          "|" +
-          translData[n]?.en_name +
-          "|" +
-          translData[n]?.cn_name,
-        label:
-          i18n.language == "zh"
-            ? translData[n]?.cn_name
-              ? `${translData[n].cn_name + "-" + translData[n].en_name} (${n})`
-              : n
-            : translData[n]?.en_name
-              ? `${translData[n].en_name} (${n})`
-              : n,
-      },
-    ]);
-  });
-  const opti = temp_opti;
-
-  // Object.entries(imageUrls).forEach((key, value) => {
-  //   var n = key[0].replace("./assets/items/", "").replace(".png", "");
-  //   opti = opti.concat([
-  //     {
-  //       value: n,
-  //       label:
-  //         i18n.language == "zh"
-  //           ? translData[n]?.cn_name
-  //             ? `${translData[n].cn_name + "-" + translData[n].en_name} (${n})`
-  //             : n
-  //           : translData[n]?.en_name
-  //           ? `${translData[n].en_name} (${n})`
-  //           : n,
-  //     },
-  //   ]);
-  // });
 
   const ref1 = React.useRef(null);
   const ref2 = React.useRef(null);
   const ref3 = React.useRef(null);
   const ref4 = React.useRef(null);
   const ref5 = React.useRef(null);
-  const [open, setOpen] = React.useState(false);
-  // const tSteps = [
-  //   {
-  //     title: "欢迎",
-  //     description: "欢迎使用RWRSG，我们来进行一个简单的漫游式引导以熟悉界面",
-  //     cover: <img src={smile} style={{ maxWidth: "100px" }} />,
-  //   },
-  //   {
-  //     title: "导入数据",
-  //     description: "导入被导出数据。注意：重复部分会自动合并，或者去重",
-  //     target: () => ref1.current,
-  //   },
-  //   {
-  //     title: "下一步",
-  //     description: "前往下一个步骤",
-  //     target: () => ref2.current,
-  //   },
-  //   {
-  //     title: "添加售卖物",
-  //     description: "你可以多选售卖物一次性添加",
-  //     target: () => ref3.current,
-  //   },
-  //   {
-  //     title: "物品表单",
-  //     description: "在这里预览你选择的售卖物",
-  //     target: () => ref4.current,
-  //   },
-  //   {
-  //     title: "进度条",
-  //     description: "指示正在进行和即将进行的步骤",
-  //     target: () => ref5.current,
-  //   },
-  //   {
-  //     title: "导览结束",
-  //     description: "那么我们就到这里，接下来自己发挥。干杯！继续奔跑下去！",
-  //     cover: <img src={thumbUp} style={{ maxWidth: "100px" }} />,
-  //   },
-  // ];
   const [data, setData] = useLocalStorageState("data", {
     defaultValue: [
       { key: "lottery", name: "彩票", price: 1700, num: 1 },
@@ -419,6 +398,68 @@ const App = () => {
       { key: "aug", name: "斯太尔AUG突击步枪", price: 250, num: 5 },
     ],
   });
+
+  /* Rows saved between 2025-12-29 and 2026-01-31 key on `<key>.<type>`, which
+   * no PNG matches — they have been rendering a broken image ever since the key
+   * changed. Rewrite just those keys. Only `key` moves: name, price and
+   * quantity are carried over, and a row that resolves to nothing is left
+   * exactly as it was.
+   *
+   * Deliberately not gated on the online layer: the resolution comes from the
+   * bundled catalog, which is available synchronously. The effect is idempotent
+   * — once every key resolves, `resolveInventory` returns the same array and
+   * nothing is written — so it can safely re-run when the online layer lands. */
+  React.useEffect(() => {
+    const fixed = resolveInventory(data, catalog);
+    if (fixed !== data) setData(fixed);
+  }, [data, catalog, setData]);
+
+  /* The workbench writes straight to storage, so it announces the write and the
+   * stall re-reads. It also persists the starter rows on first mount, so the
+   * workbench's first add appends to them rather than replacing them. */
+  React.useEffect(() => {
+    if (readInventory().length === 0 && data.length > 0) setData(data);
+    const onWrite = () => setData(readInventory());
+    window.addEventListener(INVENTORY_EVENT, onWrite);
+    return () => window.removeEventListener(INVENTORY_EVENT, onWrite);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setData]);
+
+  /* Resolved once for rendering and for every mutation, so the identity used to
+   * look a row up is always the identity that was stored. */
+  const rows = React.useMemo(
+    () => resolveInventory(data, catalog),
+    [data, catalog],
+  );
+
+  /* The picker hands back hud icons; prices and de-duping belong here, where
+   * the stall rows live. */
+  const handleAddItems = (itemKeys) => {
+    const addedRows = itemKeys.map((itemKey) => {
+      const entry = catalog.entries[itemKey];
+      /* `entry` is keyed by the record key; its hud_icon is what the stall
+       * renders. Falling back to the key itself keeps an item the catalog has
+       * never seen from being dropped. */
+      const hudIcon = entry?.hud_icon || itemKey;
+      return {
+        /* The hud icon: what the stall renders, and the field every version of
+         * rwrsg has written. Not unique, so `itemKey` carries the identity. */
+        key: hudIcon,
+        itemKey,
+        /* An online-only item has no Chinese name yet — an English label beats
+         * a row reading "未设定". */
+        name: entry?.cn_name || entry?.en_name || itemKey,
+        price: priceData[hudIcon] ?? 0,
+      };
+    });
+    setData(dedupeRows(rows.concat(addedRows)));
+    message.open({
+      type: "success",
+      content: t("add") + " " + addedRows.map((row) => row.name).join(", "),
+      duration: 3,
+    });
+  };
+
   const columns = [
     { key: "sort", align: "center", width: 80, render: () => <DragHandle /> },
     {
@@ -429,7 +470,7 @@ const App = () => {
         <>
           <Image
             width={50}
-            src={imageUrls["./assets/items/" + text + ".png"]}
+            src={catalog.iconUrl(text)}
             fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMIAAADDCAYAAADQvc6UAAABRWlDQ1BJQ0MgUHJvZmlsZQAAKJFjYGASSSwoyGFhYGDIzSspCnJ3UoiIjFJgf8LAwSDCIMogwMCcmFxc4BgQ4ANUwgCjUcG3awyMIPqyLsis7PPOq3QdDFcvjV3jOD1boQVTPQrgSkktTgbSf4A4LbmgqISBgTEFyFYuLykAsTuAbJEioKOA7DkgdjqEvQHEToKwj4DVhAQ5A9k3gGyB5IxEoBmML4BsnSQk8XQkNtReEOBxcfXxUQg1Mjc0dyHgXNJBSWpFCYh2zi+oLMpMzyhRcASGUqqCZ16yno6CkYGRAQMDKMwhqj/fAIcloxgHQqxAjIHBEugw5sUIsSQpBobtQPdLciLEVJYzMPBHMDBsayhILEqEO4DxG0txmrERhM29nYGBddr//5/DGRjYNRkY/l7////39v///y4Dmn+LgeHANwDrkl1AuO+pmgAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAAwqADAAQAAAABAAAAwwAAAAD9b/HnAAAHlklEQVR4Ae3dP3PTWBSGcbGzM6GCKqlIBRV0dHRJFarQ0eUT8LH4BnRU0NHR0UEFVdIlFRV7TzRksomPY8uykTk/zewQfKw/9znv4yvJynLv4uLiV2dBoDiBf4qP3/ARuCRABEFAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghggQAQZQKAnYEaQBAQaASKIAQJEkAEEegJmBElAoBEgghgg0Aj8i0JO4OzsrPv69Wv+hi2qPHr0qNvf39+iI97soRIh4f3z58/u7du3SXX7Xt7Z2enevHmzfQe+oSN2apSAPj09TSrb+XKI/f379+08+A0cNRE2ANkupk+ACNPvkSPcAAEibACyXUyfABGm3yNHuAECRNgAZLuYPgEirKlHu7u7XdyytGwHAd8jjNyng4OD7vnz51dbPT8/7z58+NB9+/bt6jU/TI+AGWHEnrx48eJ/EsSmHzx40L18+fLyzxF3ZVMjEyDCiEDjMYZZS5wiPXnyZFbJaxMhQIQRGzHvWR7XCyOCXsOmiDAi1HmPMMQjDpbpEiDCiL358eNHurW/5SnWdIBbXiDCiA38/Pnzrce2YyZ4//59F3ePLNMl4PbpiL2J0L979+7yDtHDhw8vtzzvdGnEXdvUigSIsCLAWavHp/+qM0BcXMd/q25n1vF57TYBp0a3mUzilePj4+7k5KSLb6gt6ydAhPUzXnoPR0dHl79WGTNCfBnn1uvSCJdegQhLI1vvCk+fPu2ePXt2tZOYEV6/fn31dz+shwAR1sP1cqvLntbEN9MxA9xcYjsxS1jWR4AIa2Ibzx0tc44fYX/16lV6NDFLXH+YL32jwiACRBiEbf5KcXoTIsQSpzXx4N28Ja4BQoK7rgXiydbHjx/P25TaQAJEGAguWy0+2Q8PD6/Ki4R8EVl+bzBOnZY95fq9rj9zAkTI2SxdidBHqG9+skdw43borCXO/ZcJdraPWdv22uIEiLA4q7nvvCug8WTqzQveOH26fodo7g6uFe/a17W3+nFBAkRYENRdb1vkkz1CH9cPsVy/jrhr27PqMYvENYNlHAIesRiBYwRy0V+8iXP8+/fvX11Mr7L7ECueb/r48eMqm7FuI2BGWDEG8cm+7G3NEOfmdcTQw4h9/55lhm7DekRYKQPZF2ArbXTAyu4kDYB2YxUzwg0gi/41ztHnfQG26HbGel/crVrm7tNY+/1btkOEAZ2M05r4FB7r9GbAIdxaZYrHdOsgJ/wCEQY0J74TmOKnbxxT9n3FgGGWWsVdowHtjt9Nnvf7yQM2aZU/TIAIAxrw6dOnAWtZZcoEnBpNuTuObWMEiLAx1HY0ZQJEmHJ3HNvGCBBhY6jtaMoEiJB0Z29vL6ls58vxPcO8/zfrdo5qvKO+d3Fx8Wu8zf1dW4p/cPzLly/dtv9Ts/EbcvGAHhHyfBIhZ6NSiIBTo0LNNtScABFyNiqFCBChULMNNSdAhJyNSiECRCjUbEPNCRAhZ6NSiAARCjXbUHMCRMjZqBQiQIRCzTbUnAARcjYqhQgQoVCzDTUnQIScjUohAkQo1GxDzQkQIWejUogAEQo121BzAkTI2agUIkCEQs021JwAEXI2KoUIEKFQsw01J0CEnI1KIQJEKNRsQ80JECFno1KIABEKNdtQcwJEyNmoFCJAhELNNtScABFyNiqFCBChULMNNSdAhJyNSiECRCjUbEPNCRAhZ6NSiAARCjXbUHMCRMjZqBQiQIRCzTbUnAARcjYqhQgQoVCzDTUnQIScjUohAkQo1GxDzQkQIWejUogAEQo121BzAkTI2agUIkCEQs021JwAEXI2KoUIEKFQsw01J0CEnI1KIQJEKNRsQ80JECFno1KIABEKNdtQcwJEyNmoFCJAhELNNtScABFyNiqFCBChULMNNSdAhJyNSiECRCjUbEPNCRAhZ6NSiAARCjXbUHMCRMjZqBQiQIRCzTbUnAARcjYqhQgQoVCzDTUnQIScjUohAkQo1GxDzQkQIWejUogAEQo121BzAkTI2agUIkCEQs021JwAEXI2KoUIEKFQsw01J0CEnI1KIQJEKNRsQ80JECFno1KIABEKNdtQcwJEyNmoFCJAhELNNtScABFyNiqFCBChULMNNSdAhJyNSiEC/wGgKKC4YMA4TAAAAABJRU5ErkJggg=="
           />
         </>
@@ -444,27 +485,37 @@ const App = () => {
       title: t("action"),
       key: "delete",
       render: (_, record) => (
-        <Button
-          icon={<DeleteOutlined />}
-          danger
-          onClick={() => {
-            setData(
-              removeDuplicates(
-                data.filter(function (item) {
-                  return item.key !== record.key;
-                }),
-              ),
-            );
+        <Space size={2}>
+          {/* Straight to the item's full article on the wiki. */}
+          {wikiUrl(record.itemKey || record.key, catalog.online.packageId) && (
+            <Tooltip title={t("openInWiki")}>
+              <Button
+                icon={<LinkOutlined />}
+                href={wikiUrl(record.itemKey || record.key, catalog.online.packageId)}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={t("openInWiki")}
+              />
+            </Tooltip>
+          )}
+          <Button
+            icon={<DeleteOutlined />}
+            danger
+            aria-label={t("delete")}
+            onClick={() => {
+              /* Delete by identity, not by icon — several rows can share one. */
+              setData(rows.filter((item) => rowId(item) !== rowId(record)));
 
-            if (record.key.length > 0)
-              message.open({
-                type: "success",
-                content: t("delete") + " " + record.name,
-                duration: 3,
-              });
-          }}
-          style={{ textWrap: "wrap" }}
-        />
+              if (rowId(record).length > 0)
+                message.open({
+                  type: "success",
+                  content: t("delete") + " " + record.name,
+                  duration: 3,
+                });
+            }}
+            style={{ textWrap: "wrap" }}
+          />
+        </Space>
       ),
     },
   ];
@@ -482,7 +533,7 @@ const App = () => {
         <div>
           <Image
             width={50}
-            src={imageUrls["./assets/items/" + text + ".png"]}
+            src={catalog.iconUrl(text)}
             fallback="data:image/png;base64,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"
           />
           <Button
@@ -512,7 +563,6 @@ const App = () => {
       title: t("price") + "(rp)",
       dataIndex: "price",
       key: "price",
-      onFilter: (value, record) => record.name.indexOf(value) === 0,
       sorter: (a, b) => a.price - b.price,
 
       render: (text, record) => (
@@ -536,7 +586,6 @@ const App = () => {
       title: t("num"),
       dataIndex: "num",
       key: "num",
-      onFilter: (value, record) => record.name.indexOf(value) === 0,
       sorter: (a, b) => a.num - b.num,
 
       render: (text, record) => (
@@ -558,10 +607,6 @@ const App = () => {
     },
   ];
 
-  const [addChoise, setAddChoice] = React.useState([]);
-  const handleAddChoiseChange = (value) => {
-    setAddChoice(value);
-  };
   const [selectedRowKeys, setSelectedRowKeys] = React.useState([]);
   const onSelectChange = (newSelectedRowKeys) => {
     setSelectedRowKeys(newSelectedRowKeys);
@@ -575,20 +620,12 @@ const App = () => {
       Table.SELECTION_NONE,
       {
         key: "delete",
-        onSelect: (changeableRowKeys) => {
+        onSelect: () => {
           //console.log("orgin data:", data);
           //console.log("rows to del:", selectedRowKeys);
-          var newData = data.filter(function (item) {
-            var delFlag = false;
-            selectedRowKeys.forEach((itemToDel) => {
-              //console.log("current:", item, "target:", itemToDel);
-              //console.log("out:", item.key == itemToDel);
-              if (item.key == itemToDel) delFlag = true;
-            });
-            return !delFlag;
-          });
-          //console.log("result data:", newData);
-          setData(removeDuplicates(newData));
+          const doomed = new Set(selectedRowKeys);
+          const newData = rows.filter((item) => !doomed.has(rowId(item)));
+          setData(newData);
           if (selectedRowKeys.join().length > 0)
             message.open({
               type: "success",
@@ -645,6 +682,21 @@ const App = () => {
     showSizeChanger: true,
     showTotal: (total) => `${total}`,
   });
+
+  /* Eight switches, all the same shape: a stored boolean, and a label for each
+   * state. Written out longhand this was 40 lines of copy-paste with the
+   * Chinese baked in, so English users saw Chinese for the whole export step. */
+  const exportToggles = [
+    { key: "showName", value: showName, set: setShowName, on: "step.showName", off: "step.hideName" },
+    { key: "showID", value: showID, set: setShowID, on: "step.showId", off: "step.hideId" },
+    { key: "showPrice", value: showPrice, set: setShowPrice, on: "step.showPrice", off: "step.hidePrice" },
+    { key: "transUnit", value: transUnit, set: setTransUnit, on: "step.convertUnit", off: "step.keepUnit" },
+    { key: "showNum", value: showNum, set: setShowNum, on: "step.showStock", off: "step.hideStock" },
+    { key: "original", value: original, set: setOriginal, on: "step.gameStyle", off: "step.listStyle" },
+    { key: "showTitle", value: showTitle, set: setShowTitle, on: "step.showDataTitle", off: "step.hideDataTitle" },
+    { key: "useFont", value: useFont, set: setUseFont, on: "step.useFont", off: "step.noFont" },
+  ];
+
   const steps = [
     {
       title: t("app.items"),
@@ -658,16 +710,16 @@ const App = () => {
                   onDragEnd={onDragEnd}
                 >
                   <SortableContext
-                    items={data.map((i) => i.key)}
+                    items={rows.map(rowId)}
                     strategy={verticalListSortingStrategy}
                   >
                     <Table
-                      rowKey="key"
+                      rowKey={rowId}
                       components={{ body: { row: DRow } }}
                       size="small"
                       rowSelection={rowSelection}
                       columns={columns}
-                      dataSource={data}
+                      dataSource={rows}
                       pagination={pageS}
                       onChange={(pagination) => {
                         setPageS(pagination);
@@ -684,46 +736,10 @@ const App = () => {
                 style={{ height: "100%" }}
               >
                 <div ref={ref3} style={{ height: "100%", minWidth: "0" }}>
-                  <Select
-                    showSearch
-                    placeholder={t("app.input_name")}
-                    mode="multiple"
-                    size="small"
-                    prefix={<AppstoreAddOutlined />}
-                    optionFilterProp="label"
-                    style={{ width: "200px" }}
-                    onChange={handleAddChoiseChange}
-                    value={addChoise}
-                    options={opti}
-                    tokenSeparators={[","]}
-                  />
-                  <Button
-                    icon={<PlusOutlined />}
-                    type="primary"
-                    style={{ width: "100%", marginTop: "10px" }}
-                    onClick={() => {
-                      if (addChoise.join().length <= 0) return true;
-                      var newData = [];
-                      addChoise.forEach(function (item) {
-                        var hud_icon = item.split("|")[1];
-                        var en_name = item.split("|")[2];
-                        var cn_name = item.split("|")[3];
-                        newData = newData.concat([
-                          {
-                            key: hud_icon,
-                            name: cn_name,
-                            price: priceData[hud_icon] ?? 0,
-                          },
-                        ]);
-                      });
-                      setData(removeDuplicates(data.concat(newData)));
-                      message.open({
-                        type: "success",
-                        content: t("add") + addChoise.join(),
-                        duration: 3,
-                      });
-                      setAddChoice([]);
-                    }}
+                  <ItemPicker
+                    catalog={catalog}
+                    existingIds={rows.map(rowId)}
+                    onAdd={handleAddItems}
                   />
                   <Alert
                     type="info"
@@ -754,28 +770,35 @@ const App = () => {
       title: t("property"),
       content: (
         <>
-          <Table virtual size="small" columns={columns2} dataSource={data} />
+          {/* `virtual` renders **nothing** here. rc-table's virtual body only
+              draws rows when its own scroll container has a measured size, and
+              inside this step it never gets one — the table showed its header
+              and an empty body, which is why this step looked broken.
+              The table paginates, so there is nothing to virtualise anyway: at
+              most one page of rows is ever in the DOM. */}
+          <Table
+            size="small"
+            columns={columns2}
+            dataSource={rows}
+            pagination={{ pageSize: 30, showSizeChanger: true }}
+          />
           <Modal
-            title={
-              t("set") +
-              " " +
-              editKey.key +
-              "(" +
-              editKey.name +
-              ")" +
-              t("'s") +
-              " " +
-              editMode
-            }
+            title={t("step.setField", {
+              name: `${editKey.key} (${editKey.name})`,
+              field: t(`step.field.${editMode}`),
+            })}
             open={isModalOpen}
             onOk={() => {
+              /* Match on identity: several rows can share one hud icon. Also
+               * write a new object rather than mutating the row in place, so
+               * React sees the change. */
+              const target = rowId(editKey);
               setData(
-                data.map((item) => {
-                  if (editKey.key == item.key) {
-                    item[editMode] = editModal;
-                  }
-                  return item;
-                }),
+                rows.map((item) =>
+                  rowId(item) === target
+                    ? { ...item, [editMode]: editModal }
+                    : item,
+                ),
               );
               setIsModalOpen(false);
             }}
@@ -803,7 +826,7 @@ const App = () => {
       title: t("app.save"),
       content: (
         <>
-          <Alert message="如果尺寸不合适可以在下方调整宽度" closable showIcon />
+          <Alert message={t("step.widthHint")} closable showIcon />
           <div
             style={{
               display: "flex",
@@ -842,7 +865,7 @@ const App = () => {
                   >
                     <Typography.Title
                       editable={{
-                        tooltip: "点击来修改",
+                        tooltip: t("step.editTitle"),
                         onChange: setEditableStr,
                       }}
                       style={{ textAlign: "center", margin: "0" }}
@@ -850,9 +873,15 @@ const App = () => {
                       {editableStr}
                     </Typography.Title>
                     <Flex wrap gap="small" justify="center">
-                      {data.map((item) => (
+                      {/* The *resolved* rows, the same array the items table
+                          renders. Rendering raw storage meant a legacy row
+                          showed a broken image until the migration effect
+                          happened to rewrite it; and `key={item.key}` used the
+                          hud icon, which 507 of the 948 records share, so a
+                          real stall produced duplicate React keys. */}
+                      {rows.map((item) => (
                         <div
-                          key={item.key}
+                          key={rowId(item)}
                           className="grid-item"
                           style={{
                             lineHeight: "0",
@@ -869,16 +898,33 @@ const App = () => {
                               position: "relative", // 添加相对定位
                             }}
                           >
-                            <img
-                              src={
-                                imageUrls["./assets/items/" + item.key + ".png"]
-                              }
-                              style={{
-                                maxHeight: "200px",
-                                maxWidth: "100px",
-                                margin: "0 0",
-                              }}
-                            />
+                            {/* A legacy row whose item no longer exists has no
+                                icon at all. Rendering <img src={null}> paints
+                                the browser's broken-image glyph into the
+                                exported picture; a neutral placeholder does not
+                                pretend the item is fine, it just fails quietly. */}
+                            {catalog.iconUrl(item.key) ? (
+                              <img
+                                src={catalog.iconUrl(item.key)}
+                                alt={item.name || item.key}
+                                style={{
+                                  maxHeight: "200px",
+                                  maxWidth: "100px",
+                                  margin: "0 0",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                style={{
+                                  height: "100px",
+                                  width: "100px",
+                                  margin: "0 auto",
+                                  border: "1px dashed currentColor",
+                                  opacity: 0.35,
+                                }}
+                                title={item.key}
+                              />
+                            )}
 
                             {/* 新增：当original为true时显示库存标签 */}
                             {original && showNum && item.num !== undefined && (
@@ -919,7 +965,7 @@ const App = () => {
 
                           {showPrice ? (
                             <Statistic
-                              title={showTitle ? "单个价格" : ""}
+                              title={showTitle ? t("step.unitPrice") : ""}
                               prefix={<DollarCircleOutlined />}
                               value={
                                 item.price
@@ -960,9 +1006,9 @@ const App = () => {
                           {/* 修改：当original为false时才显示库存统计 */}
                           {showNum && !original ? (
                             <Statistic
-                              title={showTitle ? "库存量" : ""}
+                              title={showTitle ? t("step.stockCount") : ""}
                               prefix={<AppstoreOutlined />}
-                              value={item.num ? item.num + "个" : "N/A"}
+                              value={item.num ? t("step.pieces", { num: item.num }) : "N/A"}
                             />
                           ) : (
                             ""
@@ -975,7 +1021,7 @@ const App = () => {
               </div>
             </div>
           </div>
-          <Card title="导出设置面板">
+          <Card title={t("step.exportSettings")}>
             <div
               style={{
                 gap: "20px",
@@ -986,18 +1032,20 @@ const App = () => {
               }}
             >
               <div style={{ display: "flex", flexWrap: "wrap" }}>
+                {/* `Slider` accepts none of `placeholder`, `suffix` or
+                    `changeOnWheel` — all three were spread onto its root <div>
+                    as invalid DOM attributes. */}
                 <Slider
-                  placeholder="宽度"
+                  aria-label={t("step.width")}
                   value={picWidth}
                   onChange={(value) => setPicWidth(value)}
-                  suffix="px"
-                  changeOnWheel
                   min={1}
                   max={2000}
                   style={{ width: "200px" }}
                 />
                 <InputNumber
-                  placeholder="宽度"
+                  aria-label={t("step.width")}
+                  placeholder={t("step.width")}
                   value={picWidth}
                   onChange={(value) => setPicWidth(value)}
                   suffix="px"
@@ -1005,58 +1053,18 @@ const App = () => {
                   min={1}
                 />
                 <Button type="dashed" onClick={() => setPicWidth(470)}>
-                  手机合适宽度
+                  {t("step.phoneWidth")}
                 </Button>
               </div>
-              <Switch
-                checkedChildren="显示中文名称"
-                unCheckedChildren="隐藏中文名称"
-                value={showName}
-                onChange={() => setShowName(!showName)}
-              />
-              <Switch
-                checkedChildren="显示物品ID"
-                unCheckedChildren="隐藏物品ID"
-                value={showID}
-                onChange={() => setShowID(!showID)}
-              />
-              <Switch
-                checkedChildren="显示价格"
-                unCheckedChildren="隐藏价格"
-                value={showPrice}
-                onChange={() => setShowPrice(!showPrice)}
-              />
-
-              <Switch
-                checkedChildren="转换价格单位"
-                unCheckedChildren="不转换价格单位"
-                value={transUnit}
-                onChange={() => setTransUnit(!transUnit)}
-              />
-              <Switch
-                checkedChildren="显示库存量"
-                unCheckedChildren="隐藏库存量"
-                value={showNum}
-                onChange={() => setShowNum(!showNum)}
-              />
-              <Switch
-                checkedChildren="游戏库存样式"
-                unCheckedChildren="多行库存样式"
-                value={original}
-                onChange={() => setOriginal(!original)}
-              />
-              <Switch
-                checkedChildren="显示数据标题"
-                unCheckedChildren="隐藏数据标题"
-                value={showTitle}
-                onChange={() => setShowTitle(!showTitle)}
-              />
-              <Switch
-                checkedChildren="使用特殊字体"
-                unCheckedChildren="不用特殊字体"
-                value={useFont}
-                onChange={() => setUseFont(!useFont)}
-              />
+              {exportToggles.map((toggle) => (
+                <Switch
+                  key={toggle.key}
+                  checkedChildren={t(toggle.on)}
+                  unCheckedChildren={t(toggle.off)}
+                  checked={toggle.value}
+                  onChange={() => toggle.set(!toggle.value)}
+                />
+              ))}
               <ColorPicker
                 showText
                 format="hex"
@@ -1071,7 +1079,8 @@ const App = () => {
               />
 
               <InputNumber
-                placeholder="打折"
+                aria-label={t("step.discount")}
+                placeholder={t("step.discount")}
                 value={discount}
                 onChange={(value) => setDiscount(value)}
                 suffix="x"
@@ -1110,33 +1119,85 @@ const App = () => {
   const props = {
     name: "file",
     showUploadList: false,
-    beforeUpload: (file, fileList) => {
+    beforeUpload: (file) => {
       const reader = new FileReader();
-      reader.readAsText(file);
       reader.onload = () => {
-        var newData = JSON.parse(reader.result);
-        newData = data.concat(newData);
-        setData(removeDuplicates(newData));
+        /* An export is a JSON array of rows. Anything else — a truncated
+         * download, a file picked by mistake — used to be concatenated as one
+         * bogus row, or throw uncaught inside `onload` where the user never saw
+         * it. Neither said anything. */
+        const { rows: imported, reason } = parseInventoryImport(reader.result);
+        if (reason) {
+          message.open({
+            type: "error",
+            content: t("importFailed", { msg: t(reason) }),
+            duration: 5,
+          });
+          return;
+        }
+        setData(dedupeRows(data.concat(imported)));
+        message.open({
+          type: "success",
+          content: t("imported", { num: imported.length }),
+          duration: 3,
+        });
       };
-      return false; //cancel upload
+      reader.onerror = () =>
+        message.open({
+          type: "error",
+          content: t("importFailed", { msg: t("importReadError") }),
+          duration: 5,
+        });
+      reader.readAsText(file);
+      return false; // the file is read locally, never uploaded
     },
   };
-  var [isBright, setIsBright] = React.useState(true);
+  /* Appearance: follow the system by default, with an explicit override. Stored
+   * under `theme` alongside the other rwrsg preferences. */
+  const [themeMode, setThemeMode] = useLocalStorageState("theme", {
+    defaultValue: "auto",
+  });
+  const [systemDark, setSystemDark] = React.useState(() => {
+    try {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    } catch {
+      return false;
+    }
+  });
+  React.useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (event) => setSystemDark(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  const isBright = themeMode === "light" || (themeMode === "auto" && !systemDark);
+
+  /* Drive the custom properties in app.css from the resolved theme, so they can
+   * never disagree with antd's algorithm. */
+  React.useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-rwrsg-theme", isBright ? "light" : "dark");
+    /* Lets the browser paint native widgets (scrollbars, form controls) to
+     * match instead of staying stubbornly light. */
+    root.style.colorScheme = isBright ? "light" : "dark";
+  }, [isBright]);
+
   const { sitePv, pagePv, siteUv } = useVercount();
 
   return (
     <ConfigProvider theme={isBright ? {} : { algorithm: theme.darkAlgorithm }}>
       <Layout style={{ height: "100vh" }}>
-        <Alert
-          banner
-          type="info"
-          message={
-            <Marquee pauseOnHover gradient={false}>
-              {t("topWarn", { year: new Date().getFullYear() })}
-            </Marquee>
-          }
-        />
+        {/* A legal notice, not an alert. The default info-blue band was the
+            loudest element on the page; this is a quiet neutral strip. */}
+        <div className="rwrsg-notice">
+          <Marquee pauseOnHover gradient={false}>
+            {t("topWarn", { year: new Date().getFullYear() })}
+          </Marquee>
+        </div>
+        <PromoBanner />
         <Header
+          className="rwrsg-header"
           style={{
             position: "sticky",
             top: "0px",
@@ -1144,27 +1205,56 @@ const App = () => {
             width: "100%",
             display: "flex",
             alignItems: "center",
-            background: "#7da109",
           }}
         >
-          <img src={logo} />
-          <Title
-            style={{
-              margin: "auto 10px",
-              color: colorBgContainer,
-              textWrap: "nowrap",
-            }}
-          >
+          <img src={logo} alt="RWRSG" className="rwrsg-header-logo" />
+          <Title level={3} className="rwrsg-header-title">
             RWRSG
           </Title>
           <div style={{ flex: 1 }} />
-          <Switch
-            checkedChildren={<SunOutlined />}
-            unCheckedChildren={<MoonOutlined />}
-            defaultChecked
-            value={isBright}
-            onChange={(value) => setIsBright(value)}
-          />
+          <div className="rwrsg-header-controls">
+            <Tooltip title={onlineStatusText} placement="bottomRight">
+              <Switch
+                checkedChildren={<CloudSyncOutlined />}
+                unCheckedChildren={<CloudOutlined />}
+                checked={catalog.online.enabled}
+                loading={catalog.online.status === "loading"}
+                onChange={(value) => setOnlineEnabled(value)}
+                aria-label={t("online.label")}
+              />
+            </Tooltip>
+            {/* Three states, so a single toggle cannot express it. The trigger
+                shows the mode that is actually in effect. */}
+            <Dropdown
+              trigger={["click"]}
+              placement="bottomRight"
+              menu={{
+                selectable: true,
+                selectedKeys: [themeMode],
+                onClick: ({ key }) => setThemeMode(key),
+                items: [
+                  { key: "auto", label: t("theme.auto"), icon: <DesktopOutlined /> },
+                  { key: "light", label: t("theme.light"), icon: <SunOutlined /> },
+                  { key: "dark", label: t("theme.dark"), icon: <MoonOutlined /> },
+                ],
+              }}
+            >
+              <Button
+                type="text"
+                className="rwrsg-theme-trigger"
+                aria-label={t("theme.label")}
+                icon={
+                  themeMode === "auto" ? (
+                    <DesktopOutlined />
+                  ) : isBright ? (
+                    <SunOutlined />
+                  ) : (
+                    <MoonOutlined />
+                  )
+                }
+              />
+            </Dropdown>
+          </div>
         </Header>
         <Layout>
           {collapsed ? (
@@ -1247,7 +1337,7 @@ const App = () => {
                                     )
                                   }
                                 >
-                                  保存数据
+                                  {t("step.saveData")}
                                 </Button>
                                 <Button
                                   type="primary"
@@ -1257,12 +1347,23 @@ const App = () => {
                                   }}
                                   icon={<DownloadOutlined />}
                                   onClick={() => {
-                                    html2canvas(canvasRef.current).then(
+                                    html2canvas(canvasRef.current, {
+                                      /* Items whose PNG is not bundled come
+                                       * from the data site, which serves
+                                       * Access-Control-Allow-Origin: *. Without
+                                       * this the canvas is tainted and
+                                       * toBlob() throws. */
+                                      useCORS: true,
+                                    }).then(
                                       (canvas) => {
                                         canvas.toBlob((blob) => {
                                           if (blob) {
-                                            // 使用FileSaver保存文件
-                                            saveAs(
+                                            /* Was a bare `saveAs`, which is
+                                             * never imported — file-saver only
+                                             * exports it as the default. The
+                                             * ReferenceError left this button
+                                             * silently doing nothing. */
+                                            fs.saveAs(
                                               blob,
                                               "RWRSG-" +
                                                 new Date().getTime() +
@@ -1274,14 +1375,21 @@ const App = () => {
                                     );
                                   }}
                                 >
-                                  保存图片
+                                  {t("step.saveImage")}
                                 </Button>
                                 <Button
                                   type="primary"
                                   style={{ marginRight: "8px" }}
                                   icon={<CopyOutlined />}
                                   onClick={() => {
-                                    html2canvas(canvasRef.current).then(
+                                    html2canvas(canvasRef.current, {
+                                      /* Items whose PNG is not bundled come
+                                       * from the data site, which serves
+                                       * Access-Control-Allow-Origin: *. Without
+                                       * this the canvas is tainted and
+                                       * toBlob() throws. */
+                                      useCORS: true,
+                                    }).then(
                                       (canvas) => {
                                         canvas.toBlob((blob) => {
                                           if (blob) {
@@ -1290,12 +1398,12 @@ const App = () => {
                                                 "image/png": blob,
                                               });
                                               navigator.clipboard.write([item]);
-                                              message.info(
-                                                "已将图片复制至剪贴板",
-                                              );
+                                              message.info(t("step.copied"));
                                             } catch (error) {
                                               message.error(
-                                                "复制至剪贴板失败：" + error,
+                                                t("step.copyFailed", {
+                                                  msg: error.message || error,
+                                                }),
                                               );
                                             }
                                           }
@@ -1327,13 +1435,6 @@ const App = () => {
                                     {t("butImport")}
                                   </Button>
                                 </Upload>
-                                {/* <Button
-                                  icon={<QuestionCircleOutlined />}
-                                  onClick={() => setOpen(true)}
-                                  style={{ margin: "8px 0" }}
-                                >
-                                  导览帮助
-                                </Button> */}
                               </>
                             )}
                           </div>
@@ -1349,15 +1450,7 @@ const App = () => {
                       </>
                     }
                   />
-                  <Route
-                    path="/*"
-                    element={
-                      <>
-                        <Typography>什么都没有，3秒后返回首页</Typography>
-                        <meta http-equiv="refresh" content="3;url=/" />
-                      </>
-                    }
-                  />
+                  <Route path="/*" element={<NotFound />} />
                 </Routes>
               </div>
             </Content>
@@ -1400,22 +1493,34 @@ const App = () => {
                 prefix={<FileTextOutlined />}
               />
             </Row>
-            <a href="https://github.com/bananaxiao2333/rwrsg">
+            <a href={`https://github.com/${REPO}`}>
               <Row
                 justify="space-evenly"
                 style={{ margin: "20px 0", padding: "10px" }}
               >
-                <img src="https://img.shields.io/github/contributors/bananaxiao2333/rwrsg" />
-                <img src="https://img.shields.io/github/commit-activity/t/bananaxiao2333/rwrsg" />
-                <img src="https://img.shields.io/github/actions/workflow/status/bananaxiao2333/rwrsg/.github%2Fworkflows%2Fghpage.yml" />
-                <img src="https://img.shields.io/github/last-commit/bananaxiao2333/rwrsg" />
+                <img
+                  src={`https://img.shields.io/github/contributors/${REPO}`}
+                  alt="Contributors"
+                />
+                <img
+                  src={`https://img.shields.io/github/commit-activity/t/${REPO}`}
+                  alt="Commit activity"
+                />
+                <img
+                  src={`https://img.shields.io/github/actions/workflow/status/${REPO}/.github%2Fworkflows%2Fghpage.yml`}
+                  alt="Build status"
+                />
+                <img
+                  src={`https://img.shields.io/github/last-commit/${REPO}`}
+                  alt="Last commit"
+                />
               </Row>
             </a>
             <div style={{ width: "100%", alignItems: "center" }}>
               {commitHistory ? (
                 <Timeline
                   mode="alternate"
-                  items={commitHistory}
+                  items={timelineItems}
                   style={{ width: "95%" }}
                 />
               ) : (

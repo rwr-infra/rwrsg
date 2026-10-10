@@ -19,19 +19,37 @@ i18n.use(initReactI18next).init({
   resources,
   lng: savedLanguage, // 关键：使用从 localStorage 读取的语言作为初始语言
   fallbackLng: "zh",
-  debug: true,
+  // i18next's debug mode prints every lookup; useful while translating, noise
+  // in production.
+  debug: import.meta.env.DEV,
   interpolation: {
     escapeValue: false, // React 已经默认转义了，防止 XSS
   },
 });
 
+/* The document language has to follow the UI language. `index.html` hardcodes
+ * `<html lang="zh">`, so an English reader was served a page that screen readers
+ * announce as Chinese and that browser translation offers to translate *into*
+ * Chinese. `zh` is mapped to the full tag, because `lang="zh"` is ambiguous
+ * between Simplified and Traditional. */
+function applyDocumentLanguage(lng) {
+  document.documentElement.lang = lng === "zh" ? "zh-CN" : "en";
+}
+
+applyDocumentLanguage(savedLanguage);
+
 // 监听语言变化事件，并持久化到 localStorage
 i18n.on("languageChanged", (lng) => {
   localStorage.setItem("lang", lng);
+  applyDocumentLanguage(lng);
 });
 
-i18n.on("missingKey", (lngs, namespace, key, res) => {
-  console.log(lngs);
+// A missing key renders as the raw key, which is easy to ship by accident —
+// name it in dev so it is caught while translating.
+i18n.on("missingKey", (lngs, namespace, key) => {
+  if (import.meta.env.DEV) {
+    console.warn(`[i18n] missing key "${key}"`, { lngs, namespace });
+  }
 });
 
 export default i18n;
